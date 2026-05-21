@@ -20,19 +20,24 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import redis.clients.jedis.Protocol;
+import redis.clients.jedis.args.SortingOrder;
 import redis.clients.jedis.params.GetExParams;
 import redis.clients.jedis.params.HGetExParams;
 import redis.clients.jedis.params.HSetExParams;
 import redis.clients.jedis.params.SetParams;
+import redis.clients.jedis.search.Document;
+import redis.clients.jedis.search.FTSearchParams;
 import redis.clients.jedis.util.CompareCondition;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -42,11 +47,15 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.data.domain.Range;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.redis.connection.RedisHashCommands;
 import org.springframework.data.redis.connection.RedisServer;
 import org.springframework.data.redis.connection.SetCondition;
 import org.springframework.data.redis.core.types.Expiration;
 import org.springframework.data.redis.core.types.RedisClientInfo;
+import org.springframework.data.redis.search.SearchHit;
+import org.springframework.data.redis.search.SearchOptions;
+import org.springframework.data.redis.search.SearchResult;
 import org.springframework.test.util.ReflectionTestUtils;
 
 /**
@@ -600,6 +609,220 @@ class JedisConvertersUnitTests {
 
 		assertThat(JedisConverters.toSetParams(Expiration.persistent(), SetCondition.ifDigestNotEquals("aabbcc")))
 				.isEqualTo(SetParams.setParams().condition(CompareCondition.digestNe("aabbcc")));
+	}
+
+	@Nested
+	class ToFTSearchParamsShould {
+
+		@Test
+		void appliesDefaultLimit() {
+
+			FTSearchParams params = JedisConverters.toFTSearchParams(SearchOptions.create());
+
+			assertThat(ReflectionTestUtils.getField(params, "limit")).isEqualTo(new int[] { 0, 10000 });
+			assertThat(ReflectionTestUtils.getField(params, "noContent")).isEqualTo(false);
+			assertThat(ReflectionTestUtils.getField(params, "withScores")).isEqualTo(false);
+			assertThat(ReflectionTestUtils.getField(params, "verbatim")).isEqualTo(false);
+			assertThat(ReflectionTestUtils.getField(params, "inOrder")).isEqualTo(false);
+		}
+
+		@Test
+		void appliesCustomLimit() {
+
+			FTSearchParams params = JedisConverters.toFTSearchParams(SearchOptions.create().limit(5, 25));
+
+			assertThat(ReflectionTestUtils.getField(params, "limit")).isEqualTo(new int[] { 5, 25 });
+		}
+
+		@Test
+		void appliesNoContentWhenIncludeContentDisabled() {
+
+			FTSearchParams params = JedisConverters.toFTSearchParams(SearchOptions.create().includeContent(false));
+
+			assertThat(ReflectionTestUtils.getField(params, "noContent")).isEqualTo(true);
+		}
+
+		@Test
+		void appliesWithScores() {
+
+			FTSearchParams params = JedisConverters.toFTSearchParams(SearchOptions.create().scores(true));
+
+			assertThat(ReflectionTestUtils.getField(params, "withScores")).isEqualTo(true);
+		}
+
+		@Test
+		void appliesVerbatimInOrderSlopAndTimeout() {
+
+			FTSearchParams params = JedisConverters
+					.toFTSearchParams(SearchOptions.create().verbatim().inOrder().slop(2).timeout(500));
+
+			assertThat(ReflectionTestUtils.getField(params, "verbatim")).isEqualTo(true);
+			assertThat(ReflectionTestUtils.getField(params, "inOrder")).isEqualTo(true);
+			assertThat(ReflectionTestUtils.getField(params, "slop")).isEqualTo(2);
+			assertThat(ReflectionTestUtils.getField(params, "timeout")).isEqualTo(500L);
+		}
+
+		@Test
+		void appliesSortByAscending() {
+
+			FTSearchParams params = JedisConverters
+					.toFTSearchParams(SearchOptions.create().sortBy("price", Sort.Direction.ASC));
+
+			assertThat(ReflectionTestUtils.getField(params, "sortBy")).isEqualTo("price");
+			assertThat(ReflectionTestUtils.getField(params, "sortOrder")).isEqualTo(SortingOrder.ASC);
+		}
+
+		@Test
+		void appliesSortByDescending() {
+
+			FTSearchParams params = JedisConverters
+					.toFTSearchParams(SearchOptions.create().sortBy("price", Sort.Direction.DESC));
+
+			assertThat(ReflectionTestUtils.getField(params, "sortBy")).isEqualTo("price");
+			assertThat(ReflectionTestUtils.getField(params, "sortOrder")).isEqualTo(SortingOrder.DESC);
+		}
+
+		@Test
+		void appliesLanguageScorerInKeysAndInFields() {
+
+			FTSearchParams params = JedisConverters.toFTSearchParams(SearchOptions.create()
+					.language("english").scorer("BM25").inKeys("doc:1", "doc:2").inFields("title", "body"));
+
+			assertThat(ReflectionTestUtils.getField(params, "language")).isEqualTo("english");
+			assertThat(ReflectionTestUtils.getField(params, "scorer")).isEqualTo("BM25");
+			assertThat((Collection<String>) ReflectionTestUtils.getField(params, "inKeys"))
+					.containsExactly("doc:1", "doc:2");
+			assertThat((Collection<String>) ReflectionTestUtils.getField(params, "inFields"))
+					.containsExactly("title", "body");
+		}
+	}
+
+	@Nested
+	class ToSearchResultShould {
+
+		@Test
+		void convertsEmptyResult() {
+
+			redis.clients.jedis.search.SearchResult source = mock(redis.clients.jedis.search.SearchResult.class);
+			when(source.getTotalResults()).thenReturn(0L);
+			when(source.getDocuments()).thenReturn(Collections.emptyList());
+
+			SearchResult result = JedisConverters.toSearchResult(source, SearchOptions.create());
+
+			assertThat(result.getTotalResults()).isZero();
+			assertThat(result.getHits()).isEmpty();
+		}
+
+		@Test
+		void convertsTotalLargerThanReturnedHits() {
+
+			redis.clients.jedis.search.SearchResult source = mock(redis.clients.jedis.search.SearchResult.class);
+			when(source.getTotalResults()).thenReturn(42L);
+			when(source.getDocuments()).thenReturn(List.of(new Document("doc:1", Map.of("title", "hello"))));
+
+			SearchResult result = JedisConverters.toSearchResult(source, SearchOptions.create());
+
+			assertThat(result.getTotalResults()).isEqualTo(42L);
+			assertThat(result.getHits()).hasSize(1);
+		}
+
+		@Test
+		void includesScoreWhenRequested() {
+
+			redis.clients.jedis.search.SearchResult source = mock(redis.clients.jedis.search.SearchResult.class);
+			when(source.getTotalResults()).thenReturn(1L);
+			when(source.getDocuments()).thenReturn(List.of(new Document("doc:1", Map.of("title", "hello"), 0.75)));
+
+			SearchResult result = JedisConverters.toSearchResult(source, SearchOptions.create().scores(true));
+
+			SearchHit hit = result.getHits().get(0);
+			assertThat(hit.getId()).isEqualTo("doc:1");
+			assertThat(hit.getScore()).isEqualTo(0.75);
+		}
+
+		@Test
+		void omitsScoreByDefault() {
+
+			redis.clients.jedis.search.SearchResult source = mock(redis.clients.jedis.search.SearchResult.class);
+			when(source.getTotalResults()).thenReturn(1L);
+			when(source.getDocuments()).thenReturn(List.of(new Document("doc:1", Map.of("title", "hello"), 0.75)));
+
+			SearchResult result = JedisConverters.toSearchResult(source, SearchOptions.create());
+
+			assertThat(result.getHits().get(0).getScore()).isNull();
+		}
+
+		@Test
+		void alwaysReturnsNullSortKey() {
+
+			redis.clients.jedis.search.SearchResult source = mock(redis.clients.jedis.search.SearchResult.class);
+			when(source.getTotalResults()).thenReturn(1L);
+			when(source.getDocuments()).thenReturn(List.of(new Document("doc:1", Map.of("title", "hello"))));
+
+			SearchResult result = JedisConverters.toSearchResult(source, SearchOptions.create().sortKeys(true));
+
+			assertThat(result.getHits().get(0).getSortKey()).isNull();
+		}
+
+		@Test
+		void decodesByteArrayFieldValuesAsUtf8() {
+
+			Map<String, Object> fields = new LinkedHashMap<>();
+			fields.put("title", "hello".getBytes(StandardCharsets.UTF_8));
+			redis.clients.jedis.search.SearchResult source = mock(redis.clients.jedis.search.SearchResult.class);
+			when(source.getTotalResults()).thenReturn(1L);
+			when(source.getDocuments()).thenReturn(List.of(new Document("doc:1", fields)));
+
+			SearchResult result = JedisConverters.toSearchResult(source, SearchOptions.create());
+
+			assertThat(result.getHits().get(0).getDocument().getFields()).containsEntry("title", "hello");
+		}
+
+		@Test
+		void convertsNonStringFieldValuesViaToString() {
+
+			Map<String, Object> fields = new LinkedHashMap<>();
+			fields.put("count", 42);
+			fields.put("price", 3.14);
+			redis.clients.jedis.search.SearchResult source = mock(redis.clients.jedis.search.SearchResult.class);
+			when(source.getTotalResults()).thenReturn(1L);
+			when(source.getDocuments()).thenReturn(List.of(new Document("doc:1", fields)));
+
+			SearchResult result = JedisConverters.toSearchResult(source, SearchOptions.create());
+
+			assertThat(result.getHits().get(0).getDocument().getFields())
+					.containsEntry("count", "42").containsEntry("price", "3.14");
+		}
+
+		@Test
+		void omitsNullFieldValues() {
+
+			Map<String, Object> fields = new LinkedHashMap<>();
+			fields.put("title", "hello");
+			fields.put("missing", null);
+			redis.clients.jedis.search.SearchResult source = mock(redis.clients.jedis.search.SearchResult.class);
+			when(source.getTotalResults()).thenReturn(1L);
+			when(source.getDocuments()).thenReturn(List.of(new Document("doc:1", fields)));
+
+			SearchResult result = JedisConverters.toSearchResult(source, SearchOptions.create());
+
+			assertThat(result.getHits().get(0).getDocument().getFields())
+					.containsOnlyKeys("title");
+		}
+
+		@Test
+		void returnsEmptyFieldsForNoContent() {
+
+			redis.clients.jedis.search.SearchResult source = mock(redis.clients.jedis.search.SearchResult.class);
+			when(source.getTotalResults()).thenReturn(1L);
+			when(source.getDocuments()).thenReturn(List.of(new Document("doc:1", Collections.emptyMap())));
+
+			SearchResult result = JedisConverters
+					.toSearchResult(source, SearchOptions.create().includeContent(false));
+
+			assertThat(result.getHits().get(0).getId()).isEqualTo("doc:1");
+			assertThat(result.getHits().get(0).getDocument().getFields()).isEmpty();
+		}
 	}
 
 }

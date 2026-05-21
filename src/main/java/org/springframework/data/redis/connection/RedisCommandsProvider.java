@@ -118,4 +118,12 @@ public interface RedisCommandsProvider {
 	 * @since 2.0
 	 */
 	RedisZSetCommands zSetCommands();
+
+	/**
+	 * Get {@link RedisSearchCommands}.
+	 *
+	 * @return never {@literal null}.
+	 * @since 3.0
+	 */
+	RedisSearchCommands searchCommands();
 }

@@ -52,6 +52,12 @@ import org.springframework.data.redis.core.types.Expiration;
 import org.springframework.data.redis.core.types.RedisClientInfo;
 import org.springframework.data.redis.domain.geo.GeoReference;
 import org.springframework.data.redis.domain.geo.GeoShape;
+import org.springframework.data.redis.search.DropIndexOptions;
+import org.springframework.data.redis.search.IndexDefinition;
+import org.springframework.data.redis.search.Schema;
+import org.springframework.data.redis.search.SearchOptions;
+import org.springframework.data.redis.search.SearchQuery;
+import org.springframework.data.redis.search.SearchResult;
 
 /**
  * {@link DefaultedRedisConnection} provides method delegates to {@code Redis*Command} interfaces accessible via
@@ -2071,4 +2077,24 @@ public interface DefaultedRedisConnection extends RedisCommands, RedisCommandsPr
 		return zSetCommands().zRangeStoreRevByScore(dstKey, srcKey, range, limit);
 	}
 
+	/** @deprecated in favor of {@link RedisConnection#searchCommands()}. */
+	@Override
+	@Deprecated
+	default String createIndex(String name, Schema schema, IndexDefinition definition) {
+		return searchCommands().createIndex(name, schema, definition);
+	}
+
+	/** @deprecated in favor of {@link RedisConnection#searchCommands()}. */
+	@Override
+	@Deprecated
+	default void dropIndex(String name, DropIndexOptions options) {
+		searchCommands().dropIndex(name, options);
+	}
+
+	/** @deprecated in favor of {@link RedisConnection#searchCommands()}. */
+	@Override
+	@Deprecated
+	default SearchResult search(String index, SearchQuery query, SearchOptions options) {
+		return searchCommands().search(index, query, options);
+	}
 }

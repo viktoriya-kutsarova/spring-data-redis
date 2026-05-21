@@ -22,6 +22,7 @@ import redis.clients.jedis.args.BitOP;
 import redis.clients.jedis.args.FlushMode;
 import redis.clients.jedis.args.GeoUnit;
 import redis.clients.jedis.args.ListPosition;
+import redis.clients.jedis.args.SortingOrder;
 import redis.clients.jedis.params.GeoRadiusParam;
 import redis.clients.jedis.params.GeoSearchParam;
 import redis.clients.jedis.params.GetExParams;
@@ -32,9 +33,17 @@ import redis.clients.jedis.params.SetParams;
 import redis.clients.jedis.params.SortingParams;
 import redis.clients.jedis.params.ZAddParams;
 import redis.clients.jedis.resps.GeoRadiusResponse;
+import redis.clients.jedis.search.Document;
+import redis.clients.jedis.search.FTCreateParams;
+import redis.clients.jedis.search.FTSearchParams;
+import redis.clients.jedis.search.schemafields.GeoField;
+import redis.clients.jedis.search.schemafields.NumericField;
+import redis.clients.jedis.search.schemafields.TagField;
+import redis.clients.jedis.search.schemafields.TextField;
 import redis.clients.jedis.util.SafeEncoder;
 
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -63,6 +72,14 @@ import org.springframework.data.redis.connection.BitFieldSubCommands.BitFieldSet
 import org.springframework.data.redis.connection.BitFieldSubCommands.BitFieldSubCommand;
 import org.springframework.data.redis.connection.CompareCondition;
 import org.springframework.data.redis.connection.RedisGeoCommands;
+import org.springframework.data.redis.search.IndexDataType;
+import org.springframework.data.redis.search.IndexDefinition;
+import org.springframework.data.redis.search.Schema;
+import org.springframework.data.redis.search.SchemaField;
+import org.springframework.data.redis.search.SearchDocument;
+import org.springframework.data.redis.search.SearchHit;
+import org.springframework.data.redis.search.SearchOptions;
+import org.springframework.data.redis.search.SearchResult;
 import org.springframework.data.redis.connection.RedisGeoCommands.DistanceUnit;
 import org.springframework.data.redis.connection.RedisGeoCommands.GeoLocation;
 import org.springframework.data.redis.connection.RedisGeoCommands.GeoRadiusCommandArgs;
@@ -982,6 +999,375 @@ abstract class JedisConverters extends Converters {
 			return expiration.isUnixTimestamp() ? expireAt.apply(ttl) : expire.apply(ttl);
 		}
 
+	}
+
+	// -------------------------------------------------------------------------
+	// Search Model Converters
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Convert an {@link IndexDefinition} to a Jedis {@link FTCreateParams}.
+	 *
+	 * @param definition the index definition
+	 * @return the Jedis FTCreateParams
+	 * @since 4.1
+	 */
+	public static FTCreateParams toFTCreateParams(IndexDefinition definition) {
+
+		FTCreateParams params = FTCreateParams.createParams();
+
+		params.on(toJedisIndexDataType(definition.getOn()));
+
+		List<String> prefixes = definition.getPrefixes();
+		if (!prefixes.isEmpty()) {
+			params.prefix(prefixes.toArray(new String[0]));
+		}
+
+		String filter = definition.getFilter();
+		if (filter != null) {
+			params.filter(filter);
+		}
+
+		org.springframework.data.redis.search.Language language = definition.getLanguage();
+		if (language != null) {
+			params.language(language.getValue());
+		}
+
+		String languageField = definition.getLanguageField();
+		if (languageField != null) {
+			params.languageField(languageField);
+		}
+
+		Double score = definition.getScore();
+		if (score != null) {
+			params.score(score);
+		}
+
+		String scoreField = definition.getScoreField();
+		if (scoreField != null) {
+			params.scoreField(scoreField);
+		}
+
+		if (definition.isLargeSchema()) {
+			params.maxTextFields();
+		}
+
+		Long expiresAfterIdleSeconds = definition.getTemporary();
+		if (expiresAfterIdleSeconds != null) {
+			params.temporary(expiresAfterIdleSeconds);
+		}
+
+		if (!definition.isTermOffsets()) {
+			params.noOffsets();
+		}
+
+		if (definition.isHighlight()) {
+			params.noHL();
+		}
+
+		if (!definition.isStoreFields()) {
+			params.noFields();
+		}
+
+		if (!definition.isTermFrequencies()) {
+			params.noFreqs();
+		}
+
+		List<String> stopwords = definition.getStopwords();
+		if (stopwords != null) {
+			params.stopwords(stopwords.toArray(new String[0]));
+		}
+
+		if (!definition.isInitialScan()) {
+			params.skipInitialScan();
+		}
+
+		return params;
+	}
+
+	/**
+	 * Convert a {@link Schema} to a list of Jedis {@link redis.clients.jedis.search.schemafields.SchemaField} instances.
+	 *
+	 * @param schema the schema
+	 * @return the list of Jedis SchemaField instances
+	 * @since 4.1
+	 */
+	public static List<redis.clients.jedis.search.schemafields.SchemaField> toSchemaFields(Schema schema) {
+
+		List<redis.clients.jedis.search.schemafields.SchemaField> result = new ArrayList<>();
+
+		for (SchemaField field : schema.getFields()) {
+			result.add(toSchemaField(field));
+		}
+
+		return result;
+	}
+
+	private static redis.clients.jedis.search.schemafields.SchemaField toSchemaField(SchemaField field) {
+
+		if (field instanceof org.springframework.data.redis.search.TextField tf) {
+			return toTextField(tf);
+		}
+		if (field instanceof org.springframework.data.redis.search.TagField tf) {
+			return toTagField(tf);
+		}
+		if (field instanceof org.springframework.data.redis.search.NumericField nf) {
+			return toNumericField(nf);
+		}
+		if (field instanceof org.springframework.data.redis.search.GeoField gf) {
+			return toGeoField(gf);
+		}
+
+		throw new IllegalArgumentException("Unsupported field type: " + field.getClass().getName());
+	}
+
+	private static TextField toTextField(org.springframework.data.redis.search.TextField source) {
+
+		TextField field = TextField.of(source.getName());
+
+		if (source.getAlias() != null) {
+			field.as(source.getAlias());
+		}
+		if (!source.isIndexed()) {
+			field.noIndex();
+		}
+		if (source.isIndexMissing()) {
+			field.indexMissing();
+		}
+		if (!source.isNormalized()) {
+			field.sortableUNF();
+		} else if (source.isSortable()) {
+			field.sortable();
+		}
+		if (source.getWeight() != 1.0) {
+			field.weight(source.getWeight());
+		}
+		if (!source.isStemming()) {
+			field.noStem();
+		}
+		if (source.getPhonetic() != null) {
+			field.phonetic(source.getPhonetic().getValue());
+		}
+		if (source.isSuffixTrie()) {
+			field.withSuffixTrie();
+		}
+		if (source.isIndexEmpty()) {
+			field.indexEmpty();
+		}
+
+		return field;
+	}
+
+	private static TagField toTagField(org.springframework.data.redis.search.TagField source) {
+
+		TagField field = TagField.of(source.getName());
+
+		if (source.getAlias() != null) {
+			field.as(source.getAlias());
+		}
+		if (!source.isIndexed()) {
+			field.noIndex();
+		}
+		if (source.isIndexMissing()) {
+			field.indexMissing();
+		}
+		if (!source.isNormalized()) {
+			field.sortableUNF();
+		} else if (source.isSortable()) {
+			field.sortable();
+		}
+		if (source.getSeparator() != ',') {
+			field.separator(source.getSeparator());
+		}
+		if (source.isCaseSensitive()) {
+			field.caseSensitive();
+		}
+		if (source.isSuffixTrie()) {
+			field.withSuffixTrie();
+		}
+		if (source.isIndexEmpty()) {
+			field.indexEmpty();
+		}
+
+		return field;
+	}
+
+	private static NumericField toNumericField(org.springframework.data.redis.search.NumericField source) {
+
+		NumericField field = NumericField.of(source.getName());
+
+		if (source.getAlias() != null) {
+			field.as(source.getAlias());
+		}
+		if (!source.isIndexed()) {
+			field.noIndex();
+		}
+		if (source.isIndexMissing()) {
+			field.indexMissing();
+		}
+		// TODO: Uncomment when Jedis exposes sortableUNF() on NumericField
+		// if (source.isUnnormalized()) {
+		// 	field.sortableUNF();
+		// } else if (source.isSortable()) {
+		// 	field.sortable();
+		// }
+
+		if (source.isSortable()) {
+			field.sortable();
+		}
+
+		return field;
+	}
+
+	private static GeoField toGeoField(org.springframework.data.redis.search.GeoField source) {
+
+		GeoField field = GeoField.of(source.getName());
+
+		if (source.getAlias() != null) {
+			field.as(source.getAlias());
+		}
+		if (!source.isIndexed()) {
+			field.noIndex();
+		}
+		if (source.isIndexMissing()) {
+			field.indexMissing();
+		}
+		if (source.isSortable()) {
+			field.sortable();
+		}
+
+		return field;
+	}
+
+	private static redis.clients.jedis.search.IndexDataType toJedisIndexDataType(IndexDataType dataType) {
+		return switch (dataType) {
+			case HASH -> redis.clients.jedis.search.IndexDataType.HASH;
+			case JSON -> redis.clients.jedis.search.IndexDataType.JSON;
+		};
+	}
+
+	/**
+	 * Convert {@link SearchOptions} to a Jedis {@link FTSearchParams}.
+	 *
+	 * @param options the search options
+	 * @return the Jedis FTSearchParams
+	 * @since 4.1
+	 */
+	public static FTSearchParams toFTSearchParams(SearchOptions options) {
+
+		FTSearchParams params = FTSearchParams.searchParams();
+
+		params.limit(Math.toIntExact(options.getLimitOffset()), Math.toIntExact(options.getLimitCount()));
+
+		if (!options.isIncludeContent()) {
+			params.noContent();
+		}
+
+		if (options.isScores()) {
+			params.withScores();
+		}
+
+		// Note: WITHSORTKEYS is not exposed by Jedis FTSearchParams
+
+		if (options.isVerbatim()) {
+			params.verbatim();
+		}
+
+		if (options.isInOrder()) {
+			params.inOrder();
+		}
+
+		// Note: EXPLAINSCORE is not exposed by Jedis FTSearchParams
+
+		if (options.getSlop() != null) {
+			params.slop(options.getSlop());
+		}
+
+		if (options.getTimeout() != null) {
+			params.timeout(options.getTimeout());
+		}
+
+		// There is no setter for expander in Jedis FTSearchParams
+
+//		if (options.getExpander() != null) {
+//			params.expander(options.getExpander());
+//		}
+
+		if (options.getScorer() != null) {
+			params.scorer(options.getScorer());
+		}
+
+		if (options.getSortBy() != null) {
+			SortingOrder order = options.getSortDirection() == Sort.Direction.DESC ? SortingOrder.DESC : SortingOrder.ASC;
+			params.sortBy(options.getSortBy(), order);
+		}
+
+		List<String> returnFields = options.getReturnFields();
+		if (returnFields != null && !returnFields.isEmpty()) {
+			params.returnFields(returnFields.toArray(new String[0]));
+		}
+
+		if (options.getLanguage() != null) {
+			params.language(options.getLanguage());
+		}
+
+		List<String> inKeys = options.getInKeys();
+		if (inKeys != null && !inKeys.isEmpty()) {
+			params.inKeys(inKeys);
+		}
+
+		List<String> inFields = options.getInFields();
+		if (inFields != null && !inFields.isEmpty()) {
+			params.inFields(inFields);
+		}
+
+		return params;
+	}
+
+	/**
+	 * Convert a Jedis {@link redis.clients.jedis.search.SearchResult} to Spring Data {@link SearchResult}.
+	 *
+	 * @param source the Jedis search result
+	 * @param options the search options used for the query
+	 * @return the Spring Data SearchResult
+	 * @since 4.1
+	 */
+	public static SearchResult toSearchResult(redis.clients.jedis.search.SearchResult source, SearchOptions options) {
+
+		long totalResults = source.getTotalResults();
+		List<Document> documents = source.getDocuments();
+		List<SearchHit> hits = new ArrayList<>(documents.size());
+
+		for (Document document : documents) {
+
+			String id = document.getId();
+			Double score = options.isScores() ? document.getScore() : null;
+
+			Map<String, String> fields = new LinkedHashMap<>();
+			for (Map.Entry<String, Object> entry : document.getProperties()) {
+				String value = toFieldValue(entry.getValue());
+				if (value != null) {
+					fields.put(entry.getKey(), value);
+				}
+			}
+
+			hits.add(new SearchHit(id, score, null, new SearchDocument(fields)));
+		}
+
+		return new SearchResult(totalResults, hits);
+	}
+
+	private static @Nullable String toFieldValue(@Nullable Object value) {
+		if (value == null) {
+			return null;
+		}
+		if (value instanceof String s) {
+			return s;
+		}
+		if (value instanceof byte[] b) {
+			return new String(b, StandardCharsets.UTF_8);
+		}
+		return value.toString();
 	}
 
 }

@@ -17,11 +17,23 @@ package org.springframework.data.redis.connection.lettuce;
 
 import static org.springframework.data.redis.connection.RedisGeoCommands.*;
 import static org.springframework.data.redis.domain.geo.GeoReference.*;
+import static org.springframework.data.redis.search.Language.*;
 
 import io.lettuce.core.*;
 import io.lettuce.core.CompareCondition;
 import io.lettuce.core.cluster.models.partitions.Partitions;
 import io.lettuce.core.cluster.models.partitions.RedisClusterNode.NodeFlag;
+import io.lettuce.core.search.SearchReply;
+import io.lettuce.core.search.arguments.CreateArgs;
+import io.lettuce.core.search.arguments.DocumentLanguage;
+import io.lettuce.core.search.arguments.FieldArgs;
+import io.lettuce.core.search.arguments.GeoFieldArgs;
+import io.lettuce.core.search.arguments.NumericFieldArgs;
+import io.lettuce.core.search.arguments.SearchArgs;
+import io.lettuce.core.search.arguments.SortByArgs;
+import io.lettuce.core.search.arguments.TagFieldArgs;
+import io.lettuce.core.search.arguments.TextFieldArgs;
+import io.lettuce.core.search.arguments.TextFieldArgs.PhoneticMatcher;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -69,6 +81,16 @@ import org.springframework.data.redis.domain.geo.BoxShape;
 import org.springframework.data.redis.domain.geo.GeoReference;
 import org.springframework.data.redis.domain.geo.GeoShape;
 import org.springframework.data.redis.domain.geo.RadiusShape;
+import org.springframework.data.redis.search.IndexDataType;
+import org.springframework.data.redis.search.IndexDefinition;
+import org.springframework.data.redis.search.Language;
+import org.springframework.data.redis.search.Language.*;
+import org.springframework.data.redis.search.Schema;
+import org.springframework.data.redis.search.SchemaField;
+import org.springframework.data.redis.search.SearchDocument;
+import org.springframework.data.redis.search.SearchHit;
+import org.springframework.data.redis.search.SearchOptions;
+import org.springframework.data.redis.search.SearchResult;
 import org.springframework.data.redis.util.ByteUtils;
 import org.springframework.lang.Contract;
 import org.springframework.util.Assert;
@@ -1163,4 +1185,413 @@ public abstract class LettuceConverters extends Converters {
 		}
 
 	}
+
+	// -------------------------------------------------------------------------
+	// Search Model Converters
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Convert an {@link IndexDefinition} to a Lettuce {@link CreateArgs} using the {@code byte[]} codec.
+	 *
+	 * @param definition the index definition
+	 * @return the Lettuce CreateArgs
+	 * @since 4.1
+	 */
+	public static CreateArgs<byte[], byte[]> toCreateArgs(IndexDefinition definition) {
+
+		CreateArgs.Builder<byte[], byte[]> builder = CreateArgs.builder();
+
+		builder.on(toLettuceTargetType(definition.getOn()));
+
+		for (String prefix : definition.getPrefixes()) {
+			builder.withPrefix(prefix.getBytes(StandardCharsets.UTF_8));
+		}
+
+		String filter = definition.getFilter();
+		if (filter != null) {
+			builder.filter(filter.getBytes(StandardCharsets.UTF_8));
+		}
+
+		org.springframework.data.redis.search.Language language = definition.getLanguage();
+		if (language != null) {
+			DocumentLanguage lang = toLettuceLanguage(language);
+			if (lang != null) {
+				builder.defaultLanguage(lang);
+			}
+		}
+
+		Double score = definition.getScore();
+		if (score != null) {
+			builder.defaultScore(score);
+		}
+
+		if (definition.isLargeSchema()) {
+			builder.maxTextFields();
+		}
+
+		Long expiresAfterIdleSeconds = definition.getTemporary();
+		if (expiresAfterIdleSeconds != null) {
+			builder.temporary(expiresAfterIdleSeconds);
+		}
+
+		if (definition.isTermOffsets()) {
+			builder.noOffsets();
+		}
+
+		if (!definition.isHighlight()) {
+			builder.noHighlighting();
+		}
+
+		if (!definition.isStoreFields()) {
+			builder.noFields();
+		}
+
+		if (definition.isTermFrequencies()) {
+			builder.noFrequency();
+		}
+
+		List<String> stopwords = definition.getStopwords();
+		if (stopwords != null) {
+			List<byte[]> encoded = new ArrayList<>(stopwords.size());
+			for (String sw : stopwords) {
+				encoded.add(sw.getBytes(StandardCharsets.UTF_8));
+			}
+			builder.stopWords(encoded);
+		}
+
+		if (!definition.isInitialScan()) {
+			builder.skipInitialScan();
+		}
+
+		return builder.build();
+	}
+
+	/**
+	 * Convert a {@link Schema} to a list of Lettuce {@link FieldArgs} using the {@code byte[]} codec.
+	 *
+	 * @param schema the schema
+	 * @return the list of Lettuce FieldArgs
+	 * @since 4.1
+	 */
+	public static List<FieldArgs<byte[]>> toFieldArgs(Schema schema) {
+
+		List<FieldArgs<byte[]>> result = new ArrayList<>();
+
+		for (SchemaField field : schema.getFields()) {
+			result.add(toFieldArgs(field));
+		}
+
+		return result;
+	}
+
+	private static FieldArgs<byte[]> toFieldArgs(SchemaField field) {
+
+		if (field instanceof org.springframework.data.redis.search.TextField tf) {
+			return toTextFieldArgs(tf);
+		}
+		if (field instanceof org.springframework.data.redis.search.TagField tf) {
+			return toTagFieldArgs(tf);
+		}
+		if (field instanceof org.springframework.data.redis.search.NumericField nf) {
+			return toNumericFieldArgs(nf);
+		}
+		if (field instanceof org.springframework.data.redis.search.GeoField gf) {
+			return toGeoFieldArgs(gf);
+		}
+
+		throw new IllegalArgumentException("Unsupported field type: " + field.getClass().getName());
+	}
+
+	private static TextFieldArgs<byte[]> toTextFieldArgs(org.springframework.data.redis.search.TextField source) {
+
+		TextFieldArgs.Builder<byte[]> builder = TextFieldArgs.builder();
+		builder.name(source.getName().getBytes(StandardCharsets.UTF_8));
+
+		if (source.getAlias() != null) {
+			builder.as(source.getAlias().getBytes(StandardCharsets.UTF_8));
+		}
+		if (!source.isIndexed()) {
+			builder.noIndex();
+		}
+		if (source.isIndexMissing()) {
+			builder.indexMissing();
+		}
+		if (!source.isNormalized()) {
+			builder.unNormalizedForm();
+		} else if (source.isSortable()) {
+			builder.sortable();
+		}
+		if (source.getWeight() != 1.0) {
+			builder.weight((long) source.getWeight());
+		}
+		if (!source.isStemming()) {
+			builder.noStem();
+		}
+		if (source.getPhonetic() != null) {
+			builder.phonetic(toLettucePhoneticMatcher(source.getPhonetic()));
+		}
+		if (source.isSuffixTrie()) {
+			builder.withSuffixTrie();
+		}
+		if (source.isIndexEmpty()) {
+			builder.indexEmpty();
+		}
+
+		return builder.build();
+	}
+
+	private static TagFieldArgs<byte[]> toTagFieldArgs(org.springframework.data.redis.search.TagField source) {
+
+		TagFieldArgs.Builder<byte[]> builder = TagFieldArgs.builder();
+		builder.name(source.getName().getBytes(StandardCharsets.UTF_8));
+
+		if (source.getAlias() != null) {
+			builder.as(source.getAlias().getBytes(StandardCharsets.UTF_8));
+		}
+		if (!source.isIndexed()) {
+			builder.noIndex();
+		}
+		if (source.isIndexMissing()) {
+			builder.indexMissing();
+		}
+		if (!source.isNormalized()) {
+			builder.unNormalizedForm();
+		} else if (source.isSortable()) {
+			builder.sortable();
+		}
+		if (source.getSeparator() != ',') {
+			builder.separator(String.valueOf(source.getSeparator()));
+		}
+		if (source.isCaseSensitive()) {
+			builder.caseSensitive();
+		}
+		if (source.isSuffixTrie()) {
+			builder.withSuffixTrie();
+		}
+		if (source.isIndexEmpty()) {
+			builder.indexEmpty();
+		}
+
+		return builder.build();
+	}
+
+	private static NumericFieldArgs<byte[]> toNumericFieldArgs(org.springframework.data.redis.search.NumericField source) {
+
+		NumericFieldArgs.Builder<byte[]> builder = NumericFieldArgs.builder();
+		builder.name(source.getName().getBytes(StandardCharsets.UTF_8));
+
+		if (source.getAlias() != null) {
+			builder.as(source.getAlias().getBytes(StandardCharsets.UTF_8));
+		}
+		if (!source.isIndexed()) {
+			builder.noIndex();
+		}
+		if (source.isIndexMissing()) {
+			builder.indexMissing();
+		}
+		if (!source.isNormalized()) {
+			builder.unNormalizedForm();
+		} else if (source.isSortable()) {
+			builder.sortable();
+		}
+
+		return builder.build();
+	}
+
+	private static GeoFieldArgs<byte[]> toGeoFieldArgs(org.springframework.data.redis.search.GeoField source) {
+
+		GeoFieldArgs.Builder<byte[]> builder = GeoFieldArgs.builder();
+		builder.name(source.getName().getBytes(StandardCharsets.UTF_8));
+
+		if (source.getAlias() != null) {
+			builder.as(source.getAlias().getBytes(StandardCharsets.UTF_8));
+		}
+		if (!source.isIndexed()) {
+			builder.noIndex();
+		}
+		if (source.isIndexMissing()) {
+			builder.indexMissing();
+		}
+		if (source.isSortable()) {
+			builder.sortable();
+		}
+
+		return builder.build();
+	}
+
+	private static CreateArgs.TargetType toLettuceTargetType(IndexDataType dataType) {
+		return switch (dataType) {
+			case HASH -> CreateArgs.TargetType.HASH;
+			case JSON -> CreateArgs.TargetType.JSON;
+		};
+	}
+
+	private static DocumentLanguage toLettuceLanguage(Language language) {
+		return toDocumentLanguage(language.getValue());
+	}
+
+	private static PhoneticMatcher toLettucePhoneticMatcher(
+			org.springframework.data.redis.search.PhoneticMatcher matcher) {
+		if (matcher.getValue().equals(ENGLISH.getValue())) {
+			return PhoneticMatcher.ENGLISH;
+		}
+		if (matcher.getValue().equals(FRENCH.getValue())) {
+			return PhoneticMatcher.FRENCH;
+		}
+		if (matcher.getValue().equals(PORTUGUESE.getValue())) {
+			return PhoneticMatcher.PORTUGUESE;
+		}
+		if (matcher.getValue().equals(SPANISH.getValue())) {
+			return PhoneticMatcher.SPANISH;
+		}
+		return PhoneticMatcher.ENGLISH;
+	}
+
+	/**
+	 * Convert {@link SearchOptions} to Lettuce {@link SearchArgs}.
+	 *
+	 * @param options the search options
+	 * @return the Lettuce SearchArgs
+	 * @since 4.1
+	 */
+	public static SearchArgs<byte[], byte[]> toSearchArgs(SearchOptions options) {
+
+		SearchArgs.Builder<byte[], byte[]> builder = SearchArgs.builder();
+
+		if (options.getLimitCount() > 0) {
+			builder.limit(options.getLimitOffset(), options.getLimitCount());
+		}
+
+		if (!options.isIncludeContent()) {
+			builder.noContent();
+		}
+
+		if (options.isScores()) {
+			builder.withScores();
+		}
+
+		if (options.isSortKeys()) {
+			builder.withSortKeys();
+		}
+
+		if (options.isVerbatim()) {
+			builder.verbatim();
+		}
+
+		if (options.isInOrder()) {
+			builder.inOrder();
+		}
+
+		if (options.getSlop() != null) {
+			builder.slop(options.getSlop());
+		}
+
+		if (options.getTimeout() != null) {
+			builder.timeout(Duration.ofMillis(options.getTimeout()));
+		}
+
+		// Note: scorer() requires ScoringFunction enum - custom scorers not supported via this API
+		// Note: expander() requires byte[] - custom expanders would need conversion
+
+		if (options.getSortBy() != null) {
+			SortByArgs.Builder<byte[]> sortByBuilder = SortByArgs.builder();
+			sortByBuilder.attribute(options.getSortBy().getBytes(StandardCharsets.UTF_8));
+			if (options.getSortDirection().isDescending()) {
+				sortByBuilder.descending();
+			}
+			builder.sortBy(sortByBuilder.build());
+		}
+
+		List<String> returnFields = options.getReturnFields();
+		if (returnFields != null && !returnFields.isEmpty()) {
+			for (String field : returnFields) {
+				builder.returnField(field.getBytes(StandardCharsets.UTF_8));
+			}
+		}
+
+		if (options.getLanguage() != null) {
+			DocumentLanguage lang = toDocumentLanguage(options.getLanguage());
+			if (lang != null) {
+				builder.language(lang);
+			}
+		}
+
+		List<String> inKeys = options.getInKeys();
+		if (inKeys != null && !inKeys.isEmpty()) {
+			for (String key : inKeys) {
+				builder.inKey(key.getBytes(StandardCharsets.UTF_8));
+			}
+		}
+
+		List<String> inFields = options.getInFields();
+		if (inFields != null && !inFields.isEmpty()) {
+			for (String field : inFields) {
+				builder.inField(field.getBytes(StandardCharsets.UTF_8));
+			}
+		}
+
+		return builder.build();
+	}
+
+	/**
+	 * Convert a language string to Lettuce {@link DocumentLanguage}.
+	 *
+	 * @param language the language string (e.g., "english", "en", "german")
+	 * @return the corresponding DocumentLanguage, or {@literal null} if not recognized
+	 * @since 4.1
+	 */
+	@Nullable
+	public static DocumentLanguage toDocumentLanguage(String language) {
+		try {
+			return DocumentLanguage.valueOf(language.toUpperCase(Locale.ROOT));
+		} catch (IllegalArgumentException e) {
+			// Try to match by locale
+			try {
+				Locale locale = Locale.forLanguageTag(language);
+				return DocumentLanguage.getLanguage(locale);
+			} catch (Exception ex) {
+				return null;
+			}
+		}
+	}
+
+	/**
+	 * Convert a Lettuce {@link SearchReply} to Spring Data {@link SearchResult}.
+	 *
+	 * @param reply the Lettuce search reply
+	 * @param options the search options used for the query
+	 * @return the Spring Data SearchResult
+	 * @since 4.1
+	 */
+	public static SearchResult toSearchResult(SearchReply<byte[], byte[]> reply, SearchOptions options) {
+
+		long totalResults = reply.getCount();
+		List<SearchReply.SearchResult<byte[], byte[]>> results = reply.getResults();
+		List<SearchHit> hits = new ArrayList<>(results.size());
+
+		for (SearchReply.SearchResult<byte[], byte[]> result : results) {
+
+			String id = new String(result.getId(), StandardCharsets.UTF_8);
+			Double score = options.isScores() ? result.getScore() : null;
+			String sortKey = null;
+			if (options.isSortKeys() && result.getSortKey() != null) {
+				sortKey = new String(result.getSortKey(), StandardCharsets.UTF_8);
+			}
+
+			Map<String, String> fields = new LinkedHashMap<>();
+			Map<byte[], byte[]> body = result.getFields();
+			if (body != null) {
+				for (Map.Entry<byte[], byte[]> entry : body.entrySet()) {
+					String fieldName = new String(entry.getKey(), StandardCharsets.UTF_8);
+					String fieldValue = new String(entry.getValue(), StandardCharsets.UTF_8);
+					fields.put(fieldName, fieldValue);
+				}
+			}
+
+			hits.add(new SearchHit(id, score, sortKey, new SearchDocument(fields)));
+		}
+
+		return new SearchResult(totalResults, hits);
+	}
+
 }

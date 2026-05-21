@@ -250,6 +250,11 @@ public class DefaultStringRedisConnection implements StringRedisConnection, Deco
 	}
 
 	@Override
+	public RedisSearchCommands searchCommands() {
+		return delegate.searchCommands();
+	}
+
+	@Override
 	public Long append(byte[] key, byte[] value) {
 		return convertAndReturn(delegate.append(key, value), Converters.identityConverter());
 	}

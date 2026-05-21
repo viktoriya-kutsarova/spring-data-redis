@@ -155,6 +155,7 @@ public class LettuceConnection extends AbstractRedisConnection {
 	private final LettuceStreamCommands streamCommands = new LettuceStreamCommands(this);
 	private final LettuceStringCommands stringCommands = new LettuceStringCommands(this);
 	private final LettuceZSetCommands zSetCommands = new LettuceZSetCommands(this);
+	private final LettuceSearchCommands searchCommands = new LettuceSearchCommands(this);
 
 	private @Nullable List<LettuceResult<?, ?>> ppline;
 
@@ -308,6 +309,11 @@ public class LettuceConnection extends AbstractRedisConnection {
 	@Override
 	public RedisZSetCommands zSetCommands() {
 		return this.zSetCommands;
+	}
+
+	@Override
+	public RedisSearchCommands searchCommands() {
+		return this.searchCommands;
 	}
 
 	protected DataAccessException convertLettuceAccessException(Exception cause) {

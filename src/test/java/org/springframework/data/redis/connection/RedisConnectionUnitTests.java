@@ -163,6 +163,9 @@ class RedisConnectionUnitTests {
 		}
 
 		@Override
+		public RedisSearchCommands searchCommands() { return null; }
+
+		@Override
 		protected boolean isActive(RedisNode node) {
 			return ObjectUtils.nullSafeEquals(activeNode, node);
 		}
