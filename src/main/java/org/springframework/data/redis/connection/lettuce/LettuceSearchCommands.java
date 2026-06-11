@@ -73,7 +73,7 @@ class LettuceSearchCommands implements RedisSearchCommands {
 
 	@Override
 	public String createIndex(String name, Schema schema, IndexDefinition definition) {
-		CreateArgs<byte[], byte[]> createArgs = LettuceConverters.toCreateArgs(definition);
+		CreateArgs<byte[]> createArgs = LettuceConverters.toCreateArgs(definition);
 		List<FieldArgs<byte[]>> fieldArgs = LettuceConverters.toFieldArgs(schema);
 
 		String createIndexReply = connection.invoke().just(cmd -> {
@@ -97,15 +97,12 @@ class LettuceSearchCommands implements RedisSearchCommands {
 	}
 
 	@Override
-	@SuppressWarnings("unchecked")
 	public SearchResult search(String index, SearchQuery query, SearchOptions options) {
 
 		SearchArgs<byte[], byte[]> searchArgs = LettuceConverters.toSearchArgs(options);
-		byte[] queryBytes = query.toQueryString().getBytes(StandardCharsets.UTF_8);
-
 		SearchReply<byte[], byte[]> reply = connection.invoke().just(cmd -> {
 			RediSearchAsyncCommands<byte[], byte[]> searchCmd = (RediSearchAsyncCommands<byte[], byte[]>) cmd;
-			return searchCmd.ftSearch(index, queryBytes, searchArgs);
+			return searchCmd.ftSearch(index, query.toQueryString(), searchArgs);
 		});
 
 		return LettuceConverters.toSearchResult(reply, options);
@@ -116,7 +113,6 @@ class LettuceSearchCommands implements RedisSearchCommands {
 	 * <p>
 	 * Used for parsing FT.INFO responses returned via {@link NestedMultiOutput} with the {@code byte[]} codec.
 	 */
-	@SuppressWarnings("unchecked")
 	static Map<String, Object> parseFlatPairList(List<Object> list) {
 
 		Map<String, Object> map = new LinkedHashMap<>();

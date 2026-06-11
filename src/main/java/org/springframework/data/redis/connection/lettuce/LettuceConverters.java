@@ -1197,9 +1197,9 @@ public abstract class LettuceConverters extends Converters {
 	 * @return the Lettuce CreateArgs
 	 * @since 4.1
 	 */
-	public static CreateArgs<byte[], byte[]> toCreateArgs(IndexDefinition definition) {
+	public static CreateArgs<byte[]> toCreateArgs(IndexDefinition definition) {
 
-		CreateArgs.Builder<byte[], byte[]> builder = CreateArgs.builder();
+		CreateArgs.Builder<byte[]> builder = CreateArgs.builder();
 
 		builder.on(toLettuceTargetType(definition.getOn()));
 
@@ -1209,7 +1209,7 @@ public abstract class LettuceConverters extends Converters {
 
 		String filter = definition.getFilter();
 		if (filter != null) {
-			builder.filter(filter.getBytes(StandardCharsets.UTF_8));
+			builder.filter(filter);
 		}
 
 		org.springframework.data.redis.search.Language language = definition.getLanguage();
@@ -1252,11 +1252,7 @@ public abstract class LettuceConverters extends Converters {
 
 		List<String> stopwords = definition.getStopwords();
 		if (stopwords != null) {
-			List<byte[]> encoded = new ArrayList<>(stopwords.size());
-			for (String sw : stopwords) {
-				encoded.add(sw.getBytes(StandardCharsets.UTF_8));
-			}
-			builder.stopWords(encoded);
+			builder.stopWords(stopwords);
 		}
 
 		if (!definition.isInitialScan()) {
@@ -1308,7 +1304,7 @@ public abstract class LettuceConverters extends Converters {
 		builder.name(source.getName().getBytes(StandardCharsets.UTF_8));
 
 		if (source.getAlias() != null) {
-			builder.as(source.getAlias().getBytes(StandardCharsets.UTF_8));
+			builder.as(source.getAlias());
 		}
 		if (!source.isIndexed()) {
 			builder.noIndex();
@@ -1346,7 +1342,7 @@ public abstract class LettuceConverters extends Converters {
 		builder.name(source.getName().getBytes(StandardCharsets.UTF_8));
 
 		if (source.getAlias() != null) {
-			builder.as(source.getAlias().getBytes(StandardCharsets.UTF_8));
+			builder.as(source.getAlias());
 		}
 		if (!source.isIndexed()) {
 			builder.noIndex();
@@ -1381,7 +1377,7 @@ public abstract class LettuceConverters extends Converters {
 		builder.name(source.getName().getBytes(StandardCharsets.UTF_8));
 
 		if (source.getAlias() != null) {
-			builder.as(source.getAlias().getBytes(StandardCharsets.UTF_8));
+			builder.as(source.getAlias());
 		}
 		if (!source.isIndexed()) {
 			builder.noIndex();
@@ -1404,7 +1400,7 @@ public abstract class LettuceConverters extends Converters {
 		builder.name(source.getName().getBytes(StandardCharsets.UTF_8));
 
 		if (source.getAlias() != null) {
-			builder.as(source.getAlias().getBytes(StandardCharsets.UTF_8));
+			builder.as(source.getAlias());
 		}
 		if (!source.isIndexed()) {
 			builder.noIndex();
