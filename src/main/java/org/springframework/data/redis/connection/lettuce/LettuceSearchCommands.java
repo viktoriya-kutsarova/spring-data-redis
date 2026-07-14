@@ -73,7 +73,7 @@ class LettuceSearchCommands implements RedisSearchCommands {
 
 	@Override
 	public String createIndex(String name, Schema schema, IndexDefinition definition) {
-		CreateArgs<byte[]> createArgs = LettuceConverters.toCreateArgs(definition);
+		CreateArgs<byte[], byte[]> createArgs = LettuceConverters.toCreateArgs(definition);
 		List<FieldArgs<byte[]>> fieldArgs = LettuceConverters.toFieldArgs(schema);
 
 		String createIndexReply = connection.invoke().just(cmd -> {
@@ -102,7 +102,7 @@ class LettuceSearchCommands implements RedisSearchCommands {
 		SearchArgs<byte[], byte[]> searchArgs = LettuceConverters.toSearchArgs(options);
 		SearchReply<byte[], byte[]> reply = connection.invoke().just(cmd -> {
 			RediSearchAsyncCommands<byte[], byte[]> searchCmd = (RediSearchAsyncCommands<byte[], byte[]>) cmd;
-			return searchCmd.ftSearch(index, query.toQueryString(), searchArgs);
+			return searchCmd.ftSearch(index, query.toQueryString().getBytes(StandardCharsets.UTF_8), searchArgs);
 		});
 
 		return LettuceConverters.toSearchResult(reply, options);
