@@ -103,6 +103,9 @@ import org.springframework.util.StringUtils;
  * @author Leehyoungwoo
  * @since 1.7
  */
+
+// Implement IndexResolver for the new Redis Search and then we can use this exact converter with the new IndexResolver
+
 public class MappingRedisConverter implements RedisConverter, InitializingBean {
 
 	private static final String INVALID_TYPE_ASSIGNMENT = "Value of type %s cannot be assigned to property %s of type %s";

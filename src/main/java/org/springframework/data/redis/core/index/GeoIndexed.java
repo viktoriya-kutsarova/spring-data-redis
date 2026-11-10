@@ -29,6 +29,7 @@ import java.lang.annotation.Target;
  * @author Christoph Strobl
  * @since 1.8
  */
+//@Indexed
 @Documented
 @Retention(RetentionPolicy.RUNTIME)
 @Target({ ElementType.FIELD, ElementType.ANNOTATION_TYPE })

@@ -34,6 +34,15 @@ import org.springframework.util.Assert;
  * @author Mark Paluch
  * @since 1.7
  */
+
+
+// identifier -> hash field name or JSONPath (or alias)
+// Object
+//
+// identifier -> property field name (member of a class (entity))
+// Map<String, Object>
+
+// WANT TO REUSE RedisData ?
 public class RedisData {
 
 	private final Bucket bucket;

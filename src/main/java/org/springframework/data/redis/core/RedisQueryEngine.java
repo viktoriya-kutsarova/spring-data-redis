@@ -59,6 +59,8 @@ import org.springframework.util.CollectionUtils;
  * @author Junghoon Ban
  * @since 1.7
  */
+
+// Maybe rename this to something that SAYS it is concerned with HASHES only, the old hash structure and old indexes that create auxiliary SETs
 class RedisQueryEngine extends QueryEngine<RedisKeyValueAdapter, RedisOperationChain, Comparator<?>> {
 
 	/**

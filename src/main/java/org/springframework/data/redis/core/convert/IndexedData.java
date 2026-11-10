@@ -22,6 +22,8 @@ package org.springframework.data.redis.core.convert;
  * @author Rob Winch
  * @since 1.7
  */
+
+// use IndexedData
 public interface IndexedData {
 
 	/**
