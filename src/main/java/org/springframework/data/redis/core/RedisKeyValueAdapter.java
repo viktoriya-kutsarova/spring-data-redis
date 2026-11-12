@@ -48,6 +48,7 @@ import org.springframework.data.redis.core.PartialUpdate.PropertyUpdate;
 import org.springframework.data.redis.core.PartialUpdate.UpdateCommand;
 import org.springframework.data.redis.core.RedisKeyValueAdapter.RedisUpdateObject.Index;
 import org.springframework.data.redis.core.convert.GeoIndexedPropertyValue;
+import org.springframework.data.redis.core.convert.HashConverter;
 import org.springframework.data.redis.core.convert.KeyspaceConfiguration;
 import org.springframework.data.redis.core.convert.MappingRedisConverter;
 import org.springframework.data.redis.core.convert.MappingRedisConverter.BinaryKeyspaceIdentifier;
@@ -60,6 +61,7 @@ import org.springframework.data.redis.core.convert.ReferenceResolverImpl;
 import org.springframework.data.redis.core.mapping.RedisMappingContext;
 import org.springframework.data.redis.core.mapping.RedisPersistentEntity;
 import org.springframework.data.redis.core.mapping.RedisPersistentProperty;
+import org.springframework.data.redis.core.search.SearchIndex;
 import org.springframework.data.redis.listener.KeyExpirationEventMessageListener;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.data.redis.util.ByteUtils;
@@ -104,6 +106,9 @@ import org.springframework.util.ObjectUtils;
  * @author John Blum
  * @since 1.7
  */
+
+// Exploring the idea of the existing RedisKeyValueAdapter being a router that directs the actual methods - put, get, delete, etc.
+// to a specific storage mechanism such as LegacyHash, Hash and JSON
 public class RedisKeyValueAdapter extends AbstractKeyValueAdapter
 		implements InitializingBean, SmartLifecycle, ApplicationContextAware, ApplicationListener<RedisKeyspaceEvent> {
 
@@ -125,6 +130,15 @@ public class RedisKeyValueAdapter extends AbstractKeyValueAdapter
 	private EnableKeyspaceEvents enableKeyspaceEvents = EnableKeyspaceEvents.OFF;
 	private @Nullable String keyspaceNotificationsConfigParameter = null;
 	private ShadowCopy shadowCopy = ShadowCopy.DEFAULT;
+
+	// new line added - if this is the route, we need the mapping context here in order to get the annotations from the entity for TTL
+	private RedisMappingContext mappingContext;
+
+	// the storages this adapter delegates to; the legacy hash one is always there
+	private LegacyHashStorage legacyHash;
+	private HashStorage hash;
+
+//	private JsonStorage jsonStorage;
 
 	/**
 	 * Lifecycle state of this factory.
@@ -182,6 +196,10 @@ public class RedisKeyValueAdapter extends AbstractKeyValueAdapter
 
 		this.converter = mappingConverter;
 		this.redisOps = redisOps;
+		// needed for the router approach
+		this.mappingContext = mappingContext;
+		this.legacyHash = new LegacyHashStorage(mappingConverter, redisOps);
+		this.hash = new HashStorage(new HashConverter(this.mappingContext), redisOps);
 		initMessageListenerContainer();
 	}
 
@@ -198,73 +216,48 @@ public class RedisKeyValueAdapter extends AbstractKeyValueAdapter
 		Assert.notNull(redisOps, "RedisOperations must not be null");
 
 		this.converter = redisConverter;
+		// needed for the delegate approach - this is the part I do not like as the redisConverter is the legacy hash specific converter
+		// but we need the mapping context to get
+		this.mappingContext = redisConverter.getMappingContext();
 		this.redisOps = redisOps;
+		this.legacyHash = new LegacyHashStorage(redisConverter, redisOps);
+		this.hash = new HashStorage(new HashConverter(this.mappingContext), redisOps);
 	}
 
 	@Override
 	@SuppressWarnings("NullAway")
 	public Object put(Object id, Object item, String keyspace) {
 
-		RedisData rdo = item instanceof RedisData ? (RedisData) item : new RedisData();
-
-		if (!(item instanceof RedisData)) {
-			converter.write(item, rdo);
-		}
-
 		if (ObjectUtils.nullSafeEquals(EnableKeyspaceEvents.ON_DEMAND, enableKeyspaceEvents)
 				&& this.expirationListener.get() == null) {
 
-			if (rdo.getTimeToLive() != null && rdo.getTimeToLive() > 0) {
+
+			RedisPersistentEntity<?> persistentEntity = mappingContext.getPersistentEntity(item.getClass());
+			Long timeToLive = persistentEntity != null ? persistentEntity.getTimeToLiveAccessor().getTimeToLive(item) : null;
+			if (timeToLive != null && timeToLive > 0) {
 				initKeyExpirationListener(this.messageListenerContainer);
 			}
 		}
 
-		if (rdo.getId() == null) {
-			rdo.setId(converter.getConversionService().convert(id, String.class));
+		return storageFor(item.getClass()).put(id, item, keyspace);
+	}
+
+	// picks the storage from the annotations on the entity:
+	//   @RedisHash alone is legacy hash
+	//   @RedisHash + @SearchIndex - new hash
+	//   @RedisDocument - json
+	private AbstractStorage storageFor(Class<?> type) {
+
+		RedisPersistentEntity<?> entity = mappingContext.getPersistentEntity(type);
+
+		// if (entity != null && entity.isAnnotationPresent(RedisDocument.class)) { return json; }
+
+		// this belongs to the RedisPeristentEntity (the annotation check)
+		if (entity != null && entity.isAnnotationPresent(RedisHash.class) && entity.isAnnotationPresent(SearchIndex.class)) {
+			return hash;
 		}
 
-		redisOps.execute((RedisCallback<Object>) connection -> {
-
-			byte[] key = toBytes(rdo.getId());
-			byte[] objectKey = createKey(rdo.getKeyspace(), rdo.getId());
-
-			boolean isNew = connection.del(objectKey) == 0;
-
-			connection.hMSet(objectKey, rdo.getBucket().rawMap());
-
-			if (isNew) {
-				connection.sAdd(toBytes(rdo.getKeyspace()), key);
-			}
-
-			if (expires(rdo)) {
-				connection.expire(objectKey, rdo.getTimeToLive());
-			}
-
-			if (keepShadowCopy()) { // add phantom key so values can be restored
-
-				byte[] phantomKey = ByteUtils.concat(objectKey, BinaryKeyspaceIdentifier.PHANTOM_SUFFIX);
-
-				if (expires(rdo)) {
-					connection.del(phantomKey);
-					connection.hMSet(phantomKey, rdo.getBucket().rawMap());
-					connection.expire(phantomKey, rdo.getTimeToLive() + PHANTOM_KEY_TTL);
-				} else if (!isNew) {
-					connection.del(phantomKey);
-				}
-			}
-
-			IndexWriter indexWriter = new IndexWriter(connection, converter);
-
-			if (isNew) {
-				indexWriter.createIndexes(key, rdo.getIndexedData());
-			} else {
-				indexWriter.deleteAndUpdateIndexes(key, rdo.getIndexedData());
-			}
-
-			return null;
-		});
-
-		return item;
+		return legacyHash;
 	}
 
 	@Override

@@ -105,7 +105,8 @@ import org.springframework.util.StringUtils;
  */
 
 // Implement IndexResolver for the new Redis Search and then we can use this exact converter with the new IndexResolver
-
+// We cannot use this converter as it is for the Legacy hash - how the point, lists and dates are stored is not indexable by Redis Search
+// so we need an alternative path probably
 public class MappingRedisConverter implements RedisConverter, InitializingBean {
 
 	private static final String INVALID_TYPE_ASSIGNMENT = "Value of type %s cannot be assigned to property %s of type %s";
